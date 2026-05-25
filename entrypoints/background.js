@@ -66,23 +66,19 @@ export default defineBackground(() => {
         }
     }
 
-    /** 与 Postman 一致：去掉 data URL 前缀，减小 JSON 体积并带上 imageMime */
+    /** API 要求 imageBase64 为完整 data URL（含 data:image/...;base64, 前缀） */
     function prepareRecognizeBody(payload) {
         let imageBase64 = String(payload?.imageBase64 || '').trim();
-        let imageMime;
 
-        const match = /^data:(image\/[^;]+);base64,(.+)$/is.exec(imageBase64);
-        if (match) {
-            imageMime = match[1];
-            imageBase64 = match[2].replace(/\s+/g, '');
+        if (imageBase64 && !/^data:image\/[^;]+;base64,/i.test(imageBase64)) {
+            const mime = String(payload?.imageMime || 'image/jpeg').trim() || 'image/jpeg';
+            imageBase64 = `data:${mime};base64,${imageBase64.replace(/\s+/g, '')}`;
         }
 
-        const body = {
+        return {
             instruction: String(payload?.instruction || '').trim(),
             imageBase64,
         };
-        if (imageMime) body.imageMime = imageMime;
-        return body;
     }
 
     async function checkHealth() {
@@ -100,12 +96,13 @@ export default defineBackground(() => {
         if (!body.imageBase64) {
             throw new Error('imageBase64 为空');
         }
-
-        return apiFetch('/api/qq-zone/recognize-image', {
+        const result = await apiFetch('/api/qq-zone/recognize-image', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body),
         });
+        console.log('[recognize-image] 接口返回:', result);
+        return result;
     }
 
     /** 先由 content 写入 WXT storage，再通知；此处读取后请求本地 API */
@@ -125,24 +122,30 @@ export default defineBackground(() => {
             const entries = await listRecognizePayloads();
 
             if (entries.length === 0) {
-                return { message: '没有找到存储的识别数据', count: 0 };
+                const empty = { message: '没有找到存储的识别数据', count: 0 };
+                console.log('[TEST_RECOGNIZE_ALL] 汇总:', empty);
+                return empty;
             }
 
             const results = [];
             for (const { id, payload } of entries) {
                 try {
                     const result = await recognizePayload(payload);
+                    console.log(`[TEST_RECOGNIZE_ALL] ${id} 成功:`, result);
                     results.push({ id, success: true, data: result });
                 } catch (error) {
+                    console.warn(`[TEST_RECOGNIZE_ALL] ${id} 失败:`, error.message);
                     results.push({ id, success: false, error: error.message });
                 }
             }
 
-            return {
+            const summary = {
                 message: `已处理 ${results.length} 条识别数据`,
                 count: results.length,
                 results,
             };
+            console.log('[TEST_RECOGNIZE_ALL] 汇总:', summary);
+            return summary;
         } catch (error) {
             throw new Error(`测试识别失败: ${error.message}`);
         }

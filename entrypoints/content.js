@@ -85,14 +85,20 @@ function injectTestButton() {
             
             if (response.success) {
                 const data = response.data;
+                console.log('测试识别接口返回:', data);
+                if (data.results?.length) {
+                    for (const item of data.results) {
+                        if (item.success) {
+                            console.log(`  [${item.id}] 成功:`, item.data);
+                        } else {
+                            console.warn(`  [${item.id}] 失败:`, item.error);
+                        }
+                    }
+                }
                 const successCount = data.results?.filter(r => r.success).length || 0;
                 const failCount = data.results?.filter(r => !r.success).length || 0;
                 
                 showToast(`✅ 测试完成: ${data.count} 条数据, 成功 ${successCount} 条, 失败 ${failCount} 条`, 3000);
-                
-                if (failCount > 0) {
-                    console.warn('测试失败的记录:', data.results?.filter(r => !r.success));
-                }
             } else {
                 showToast(`❌ 测试失败: ${response.error}`, 3000);
             }
