@@ -8,6 +8,20 @@ function toWxtStorageKey(id = RECOGNIZE_STORAGE_ID) {
     return id.startsWith(WXT_STORAGE_AREA_PREFIX) ? id : `${WXT_STORAGE_AREA_PREFIX}${id}`;
 }
 
+/** 日志用：不打印完整 base64 */
+function summarizePayload(payload, label = 'payload') {
+    const b64 = String(payload?.imageBase64 || '');
+    const hasDataUrl = /^data:image\/[^;]+;base64,/i.test(b64);
+    return {
+        label,
+        instructionLen: String(payload?.instruction || '').length,
+        imageBase64Len: b64.length,
+        hasDataUrlPrefix: hasDataUrl,
+        imageMime: payload?.imageMime || null,
+        createdAt: payload?.createdAt || null,
+    };
+}
+
 /**
  * 将图片识别载荷写入 extension local storage，避免 runtime message 携带大 base64。
  * 始终写入同一条记录，新数据覆盖旧数据。
@@ -15,10 +29,12 @@ function toWxtStorageKey(id = RECOGNIZE_STORAGE_ID) {
  * @returns {Promise<string>} 固定存储 id，供 background 读取
  */
 export async function saveRecognizePayload(payload) {
-    await storage.setItem(toWxtStorageKey(), {
-        ...payload,
-        createdAt: Date.now(),
-    });
+    const key = toWxtStorageKey();
+    const item = { ...payload, createdAt: Date.now() };
+    console.log('[recognize-storage] save 开始', { key, ...summarizePayload(item, 'save') });
+    const t0 = Date.now();
+    await storage.setItem(key, item);
+    console.log('[recognize-storage] save 完成', { key, ms: Date.now() - t0 });
     return RECOGNIZE_STORAGE_ID;
 }
 
@@ -28,10 +44,19 @@ export async function saveRecognizePayload(payload) {
  * @returns {Promise<{instruction?: string, imageBase64?: string, createdAt?: number}|null>}
  */
 export async function loadRecognizePayload(_id) {
+    const key = toWxtStorageKey(_id);
     try {
-        return (await storage.getItem(toWxtStorageKey())) || null;
+        const t0 = Date.now();
+        const payload = (await storage.getItem(key)) || null;
+        console.log('[recognize-storage] load', {
+            key,
+            ms: Date.now() - t0,
+            found: !!payload,
+            ...(payload ? summarizePayload(payload, 'load') : {}),
+        });
+        return payload;
     } catch (error) {
-        console.error('加载识别载荷失败:', error);
+        console.error('[recognize-storage] load 失败', { key, error });
         return null;
     }
 }

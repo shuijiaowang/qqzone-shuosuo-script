@@ -3,47 +3,89 @@ import { listRecognizePayloads, loadRecognizePayload } from '../core/recognize-s
 const API_BASE = 'http://127.0.0.1:3840';
 /** 与 DigitalMe 服务端 DASHSCOPE_TIMEOUT_MS 对齐，大图识别常超过 30s */
 const REQUEST_TIMEOUT_MS = 120000;
+const LOG = '[qqzone-bg]';
 
 export default defineBackground(() => {
     console.log('QQ空间说说抓取插件 background 已启动', { id: browser.runtime.id });
 
-    browser.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-        if (message.type === 'CHECK_HEALTH') {
-            checkHealth()
-                .then((data) => sendResponse({ success: true, data }))
-                .catch((error) => sendResponse({ success: false, error: error.message }));
-            return true;
-        }
+    browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
+        const type = message?.type;
+        if (!type) return;
 
-        if (message.type === 'RECOGNIZE_IMAGE') {
-            recognizeByStoredId(message.storageKey || message.id)
-                .then((data) => sendResponse({ success: true, data }))
-                .catch((error) => sendResponse({ success: false, error: error.message }));
-            return true;
-        }
+        console.log(LOG, 'onMessage', {
+            type,
+            tabId: sender?.tab?.id,
+            storageKey: message.storageKey || message.id,
+        });
 
-        if (message.type === 'TEST_RECOGNIZE_ALL') {
-            testRecognizeAll()
-                .then((data) => sendResponse({ success: true, data }))
-                .catch((error) => sendResponse({ success: false, error: error.message }));
+        const reply = (promise) => {
+            const t0 = Date.now();
+            promise
+                .then((data) => {
+                    console.log(LOG, `${type} 完成`, {
+                        ms: Date.now() - t0,
+                        success: true,
+                        dataOk: data?.ok,
+                        dataKeys: data ? Object.keys(data) : [],
+                    });
+                    sendResponse({ success: true, data });
+                })
+                .catch((error) => {
+                    console.error(LOG, `${type} 失败`, {
+                        ms: Date.now() - t0,
+                        name: error?.name,
+                        message: error?.message,
+                    });
+                    sendResponse({ success: false, error: error.message });
+                });
             return true;
+        };
+
+        if (type === 'CHECK_HEALTH') return reply(checkHealth());
+        if (type === 'RECOGNIZE_IMAGE') {
+            return reply(recognizeByStoredId(message.storageKey || message.id));
         }
+        if (type === 'TEST_RECOGNIZE_ALL') return reply(testRecognizeAll());
     });
 
     async function apiFetch(path, options = {}) {
+        const url = `${API_BASE}${path}`;
+        const bodyStr = options.body;
+        const bodyBytes = bodyStr ? new TextEncoder().encode(bodyStr).length : 0;
+        console.log(LOG, 'apiFetch 开始', {
+            method: options.method || 'GET',
+            url,
+            bodyBytes,
+            bodyMB: bodyBytes ? (bodyBytes / 1024 / 1024).toFixed(2) : 0,
+        });
+
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+        const t0 = Date.now();
         try {
-            const response = await fetch(`${API_BASE}${path}`, {
+            const response = await fetch(url, {
                 ...options,
                 signal: controller.signal,
             });
             let data = null;
             try {
                 data = await response.json();
-            } catch {
+            } catch (parseErr) {
+                console.warn(LOG, 'apiFetch JSON 解析失败', {
+                    path,
+                    status: response.status,
+                    parseErr: parseErr?.message,
+                });
                 data = null;
             }
+            console.log(LOG, 'apiFetch 响应', {
+                path,
+                ms: Date.now() - t0,
+                status: response.status,
+                ok: response.ok,
+                dataOk: data?.ok,
+                dataKeys: data ? Object.keys(data) : [],
+            });
             if (!response.ok) {
                 const msg =
                     data?.error?.message ||
@@ -57,6 +99,12 @@ export default defineBackground(() => {
             }
             return data;
         } catch (error) {
+            console.error(LOG, 'apiFetch 异常', {
+                path,
+                ms: Date.now() - t0,
+                name: error?.name,
+                message: error?.message,
+            });
             if (error?.name === 'AbortError') {
                 throw new Error(`请求超时（>${REQUEST_TIMEOUT_MS / 1000}s）`);
             }
@@ -88,7 +136,18 @@ export default defineBackground(() => {
         });
     }
 
+    function summarizePayload(payload) {
+        const b64 = String(payload?.imageBase64 || '');
+        return {
+            instructionLen: String(payload?.instruction || '').length,
+            imageBase64Len: b64.length,
+            hasDataUrlPrefix: /^data:image\/[^;]+;base64,/i.test(b64),
+            createdAt: payload?.createdAt,
+        };
+    }
+
     async function recognizePayload(payload) {
+        console.log(LOG, 'recognizePayload', summarizePayload(payload));
         const body = prepareRecognizeBody(payload);
         if (!body.instruction) {
             throw new Error('instruction 为空');
@@ -107,9 +166,11 @@ export default defineBackground(() => {
 
     /** 先由 content 写入 WXT storage，再通知；此处读取后请求本地 API */
     async function recognizeByStoredId(id) {
+        console.log(LOG, 'recognizeByStoredId', { id });
         const payload = await loadRecognizePayload(id);
 
         if (!payload?.imageBase64) {
+            console.error(LOG, 'recognizeByStoredId: storage 无图', { id, payload: !!payload });
             throw new Error('未找到待识别的图片数据');
         }
 

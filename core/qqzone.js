@@ -198,13 +198,23 @@ async function imagesToBase64(imgList) {
 }
 
 async function getPicContent(imgList) {
+    console.log('[qqzone] getPicContent', { imgCount: imgList.length });
     const base64 = await imagesToBase64(imgList);
-    console.log("base64", base64)
+    console.log('[qqzone] imagesToBase64 完成', {
+        imgCount: imgList.length,
+        base64Len: base64?.length ?? 0,
+        hasDataUrl: !!base64?.startsWith?.('data:image/'),
+    });
     if (!base64) return '[图片]';
 
     const data = await recognizeImage({
         instruction: '一句话描述图片',
         imageBase64: base64,
+    });
+    console.log('[qqzone] recognizeImage 结束', {
+        ok: !!data?.ok,
+        hasContent: !!data?.content,
+        contentPreview: data?.content ? String(data.content).slice(0, 80) : null,
     });
     if (data?.content) return `[图片:${data.content}]`;
     return '[图片]';

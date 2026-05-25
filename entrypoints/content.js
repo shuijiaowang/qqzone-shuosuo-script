@@ -81,7 +81,14 @@ function injectTestButton() {
         btn.textContent = '⏳ 测试中...';
         
         try {
+            console.log('[qqzone-content] 测试识别 开始');
+            const t0 = Date.now();
             const response = await browser.runtime.sendMessage({ type: 'TEST_RECOGNIZE_ALL' });
+            console.log('[qqzone-content] 测试识别 响应', {
+                ms: Date.now() - t0,
+                success: response?.success,
+                error: response?.error,
+            });
             
             if (response.success) {
                 const data = response.data;
