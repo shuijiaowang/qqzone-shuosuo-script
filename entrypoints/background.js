@@ -1,7 +1,8 @@
-import { loadRecognizePayload } from '../core/recognize-storage.js';
+import { listRecognizePayloads, loadRecognizePayload } from '../core/recognize-storage.js';
 
 const API_BASE = 'http://127.0.0.1:3840';
-const REQUEST_TIMEOUT_MS = 30000;
+/** 与 DigitalMe 服务端 DASHSCOPE_TIMEOUT_MS 对齐，大图识别常超过 30s */
+const REQUEST_TIMEOUT_MS = 120000;
 
 export default defineBackground(() => {
     console.log('QQ空间说说抓取插件 background 已启动', { id: browser.runtime.id });
@@ -15,7 +16,14 @@ export default defineBackground(() => {
         }
 
         if (message.type === 'RECOGNIZE_IMAGE') {
-            recognizeByStoredId(message.id)
+            recognizeByStoredId(message.storageKey || message.id)
+                .then((data) => sendResponse({ success: true, data }))
+                .catch((error) => sendResponse({ success: false, error: error.message }));
+            return true;
+        }
+
+        if (message.type === 'TEST_RECOGNIZE_ALL') {
+            testRecognizeAll()
                 .then((data) => sendResponse({ success: true, data }))
                 .catch((error) => sendResponse({ success: false, error: error.message }));
             return true;
@@ -30,19 +38,73 @@ export default defineBackground(() => {
                 ...options,
                 signal: controller.signal,
             });
-            if (!response.ok) {
-                throw new Error(`HTTP ${response.status}`);
+            let data = null;
+            try {
+                data = await response.json();
+            } catch {
+                data = null;
             }
-            return response.json();
+            if (!response.ok) {
+                const msg =
+                    data?.error?.message ||
+                    data?.message ||
+                    `HTTP ${response.status}`;
+                throw new Error(msg);
+            }
+            if (data && data.ok === false) {
+                const msg = data?.error?.message || data?.error?.code || 'request failed';
+                throw new Error(msg);
+            }
+            return data;
+        } catch (error) {
+            if (error?.name === 'AbortError') {
+                throw new Error(`请求超时（>${REQUEST_TIMEOUT_MS / 1000}s）`);
+            }
+            throw error;
         } finally {
             clearTimeout(timer);
         }
+    }
+
+    /** 与 Postman 一致：去掉 data URL 前缀，减小 JSON 体积并带上 imageMime */
+    function prepareRecognizeBody(payload) {
+        let imageBase64 = String(payload?.imageBase64 || '').trim();
+        let imageMime;
+
+        const match = /^data:(image\/[^;]+);base64,(.+)$/is.exec(imageBase64);
+        if (match) {
+            imageMime = match[1];
+            imageBase64 = match[2].replace(/\s+/g, '');
+        }
+
+        const body = {
+            instruction: String(payload?.instruction || '').trim(),
+            imageBase64,
+        };
+        if (imageMime) body.imageMime = imageMime;
+        return body;
     }
 
     async function checkHealth() {
         return apiFetch('/api/health', {
             method: 'GET',
             headers: { 'Content-Type': 'application/json' },
+        });
+    }
+
+    async function recognizePayload(payload) {
+        const body = prepareRecognizeBody(payload);
+        if (!body.instruction) {
+            throw new Error('instruction 为空');
+        }
+        if (!body.imageBase64) {
+            throw new Error('imageBase64 为空');
+        }
+
+        return apiFetch('/api/qq-zone/recognize-image', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
         });
     }
 
@@ -54,29 +116,35 @@ export default defineBackground(() => {
             throw new Error('未找到待识别的图片数据');
         }
 
-        return apiFetch('/api/qq-zone/recognize-image', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                instruction: payload.instruction,
-                imageBase64: payload.imageBase64,
-            }),
-        });
+        return recognizePayload(payload);
     }
-    async function recognizeByStoredIdTest(id) {
-        const payload = await loadRecognizePayload(id);
 
-        if (!payload?.imageBase64) {
-            throw new Error('未找到待识别的图片数据');
+    /** 测试功能:获取所有存储的识别数据并请求后端 */
+    async function testRecognizeAll() {
+        try {
+            const entries = await listRecognizePayloads();
+
+            if (entries.length === 0) {
+                return { message: '没有找到存储的识别数据', count: 0 };
+            }
+
+            const results = [];
+            for (const { id, payload } of entries) {
+                try {
+                    const result = await recognizePayload(payload);
+                    results.push({ id, success: true, data: result });
+                } catch (error) {
+                    results.push({ id, success: false, error: error.message });
+                }
+            }
+
+            return {
+                message: `已处理 ${results.length} 条识别数据`,
+                count: results.length,
+                results,
+            };
+        } catch (error) {
+            throw new Error(`测试识别失败: ${error.message}`);
         }
-
-        return apiFetch('/api/qq-zone/recognize-image', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                instruction: payload.instruction,
-                imageBase64: payload.imageBase64,
-            }),
-        });
     }
 });

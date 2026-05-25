@@ -199,6 +199,7 @@ async function imagesToBase64(imgList) {
 
 async function getPicContent(imgList) {
     const base64 = await imagesToBase64(imgList);
+    console.log("base64", base64)
     if (!base64) return '[图片]';
 
     const data = await recognizeImage({

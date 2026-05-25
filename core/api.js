@@ -1,4 +1,5 @@
 /** content 侧 API 客户端：经 background 代理，规避页面 loopback / CORS 限制 */
+import { saveRecognizePayload } from './recognize-storage.js';
 
 /** @type {boolean | null} */
 let serviceAvailable = null;
@@ -54,10 +55,10 @@ export async function recognizeImage(payload) {
     const available = await isRecognizeServiceAvailable();
     if (!available) return null;
 
-    const storageKey = `recognize_${crypto.randomUUID()}`;
+    let storageKey = '';
 
     try {
-        await browser.storage.session.set({ [storageKey]: payload });
+        storageKey = await saveRecognizePayload(payload);
         const response = await sendBackground('RECOGNIZE_IMAGE', { storageKey });
 
         if (response.success && response.data?.ok) {
@@ -70,7 +71,5 @@ export async function recognizeImage(payload) {
         serviceAvailable = false;
         warnServiceOnce(`⚠️ 图片识别请求失败，后续图片将跳过识别: ${error.message}`);
         return null;
-    } finally {
-        await browser.storage.session.remove(storageKey).catch(() => {});
     }
 }
