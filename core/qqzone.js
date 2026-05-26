@@ -332,13 +332,24 @@ async function initPanelSettings() {
     await syncGrabButtonState();
 }
 
+function appendAttachmentLines(text, attachments) {
+    if (!attachments) return text;
+    return `${text}\nattachmentImageDescription: ${attachments}`;
+}
+
 function buildFinalText() {
     let text = '';
     allQQZoneData.forEach((item, index) => {
         if (item.zf_name !== '') {
-            text += `【${index + 1}】${item.time}：${item.content} , 转发自：${item.zf_name}:${item.zf_content}\n`;
+            let line = `【${index + 1}】${item.time}：${item.content}`;
+            line = appendAttachmentLines(line, item.attachments);
+            line += ` , 转发自：${item.zf_name}:${item.zf_content}`;
+            line = appendAttachmentLines(line, item.zf_attachments);
+            text += `${line}\n`;
         } else {
-            text += `【${index + 1}】${item.time}：${item.content}\n`;
+            let line = `【${index + 1}】${item.time}：${item.content}`;
+            line = appendAttachmentLines(line, item.attachments);
+            text += `${line}\n`;
         }
     });
     return text;
@@ -351,8 +362,15 @@ function buildFinalJson() {
             time: item.time,
             content: item.content,
         };
+        if (item.attachments) {
+            entry.attachmentImageDescription = item.attachments;
+        }
         if (item.zf_name) {
-            entry.repost = { author: item.zf_name, content: item.zf_content };
+            const repost = { author: item.zf_name, content: item.zf_content };
+            if (item.zf_attachments) {
+                repost.attachmentImageDescription = item.zf_attachments;
+            }
+            entry.repost = repost;
         }
         return entry;
     });
@@ -435,14 +453,17 @@ async function imagesToBase64(imgList) {
     }
 }
 
-async function getPicContent(imgList, textContext = '') {
+async function getAttachmentDescription(imgList, textContext = '') {
     if (!imgList.length) return '';
 
     if (currentGrabMode === GRAB_MODE_NORMAL) {
         return '[图片]';
     }
 
-    console.log('[qqzone] getPicContent', { imgCount: imgList.length, hasContext: !!String(textContext || '').trim() });
+    console.log('[qqzone] getAttachmentDescription', {
+        imgCount: imgList.length,
+        hasContext: !!String(textContext || '').trim(),
+    });
     const base64 = await imagesToBase64(imgList);
     console.log('[qqzone] imagesToBase64 完成', {
         imgCount: imgList.length,
@@ -463,8 +484,15 @@ async function getPicContent(imgList, textContext = '') {
         hasContent: !!data?.content,
         contentPreview: data?.content ? String(data.content).slice(0, 80) : null,
     });
-    if (data?.content) return `[图片:${data.content}]`;
+    if (data?.content) return String(data.content).trim();
     return '[图片]';
+}
+
+function buildAttachments(imageDescription, hasVideo) {
+    const parts = [];
+    if (imageDescription) parts.push(imageDescription);
+    if (hasVideo) parts.push('[视频]');
+    return parts.join(' ');
 }
 
 async function extractCurrentPageData(qqDoc) {
@@ -480,20 +508,31 @@ async function extractCurrentPageData(qqDoc) {
 
         const contentEl = item.querySelector('.bd pre.content');
         const contentText = getPureText(contentEl);
-        const contentPic = await getPicContent(
+        const contentPicDesc = await getAttachmentDescription(
             item.querySelectorAll('.box > .md > .pic img'),
             contentText,
         );
-        const contentVideo = item.querySelector('.box > .md > .video') ? '[视频]' : '';
-        const content = contentText + contentPic + contentVideo;
+        const hasContentVideo = !!item.querySelector('.box > .md > .video');
+        const attachments = buildAttachments(contentPicDesc, hasContentVideo);
 
         const zf_name = item.querySelector('.md .bd a')?.textContent || '';
         const zfText = getPureText(item.querySelector('.md .bd pre'));
-        const zf_Pic = await getPicContent(item.querySelectorAll('.md .md .pic img'), zfText);
-        const zf_content = zfText + zf_Pic;
+        const zfPicDesc = await getAttachmentDescription(
+            item.querySelectorAll('.md .md .pic img'),
+            zfText,
+        );
+        const hasRepostVideo = !!item.querySelector('.md .md .video');
+        const zf_attachments = buildAttachments(zfPicDesc, hasRepostVideo);
 
-        if (time || content) {
-            allQQZoneData.push({ time, content, zf_name, zf_content });
+        if (time || contentText || attachments || zf_name || zfText || zf_attachments) {
+            allQQZoneData.push({
+                time,
+                content: contentText,
+                attachments,
+                zf_name,
+                zf_content: zfText,
+                zf_attachments,
+            });
         }
     }
 }
