@@ -1,5 +1,6 @@
 // ============== QQ空间抓取 ==============
 import { isRecognizeServiceAvailable, recognizeImage, resetRecognizeService } from './api.js';
+import { autoScrollToLoadImages, scrollBackToTop } from './scroop.js';
 
 const DELAY_EXPAND = 1000;
 const MAX_CANVAS_WIDTH = 1200;
@@ -247,7 +248,11 @@ async function extractCurrentPageData(qqDoc) {
 }
 
 async function autoGrabAndNextPage(qqDoc) {
+    updateStatus('滚动加载图片...');
+    await autoScrollToLoadImages();
+
     await expandAllContent(qqDoc);
+    updateStatus('解析当前页说说...');
     await extractCurrentPageData(qqDoc);
 
     const nextPageBtn = qqDoc.querySelector('.mod_pagenav_main a[title="下一页"]');
@@ -270,6 +275,8 @@ async function autoGrabAndNextPage(qqDoc) {
     while (Date.now() < deadline) {
         const list = qqDoc.querySelectorAll('#msgList > li');
         if (list.length) {
+            scrollBackToTop();
+            await sleep(CHECK_INTERVAL);
             await autoGrabAndNextPage(qqDoc);
             return;
         }
