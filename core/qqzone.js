@@ -1,5 +1,6 @@
 // ============== QQ空间抓取 ==============
 import { isRecognizeServiceAvailable, recognizeImage, resetRecognizeService } from './api.js';
+import { IMAGE_RECOGNIZE_INSTRUCTION } from './config.js';
 import { autoScrollToLoadImages, scrollBackToTop } from './scroop.js';
 
 const DELAY_EXPAND = 1000;
@@ -36,7 +37,25 @@ function showResult(text) {
     const textarea = document.getElementById('qq-grab-result');
     if (textarea) textarea.value = text;
     const copyBtn = document.getElementById('qq-grab-copy');
+    const copyJsonBtn = document.getElementById('qq-grab-copy-json');
     if (copyBtn) copyBtn.style.display = 'block';
+    if (copyJsonBtn) copyJsonBtn.style.display = 'block';
+}
+
+async function copyText(text, doneMessage = '已复制到剪贴板！') {
+    try {
+        await navigator.clipboard.writeText(text);
+    } catch {
+        const textarea = document.getElementById('qq-grab-result');
+        if (textarea) {
+            const prev = textarea.value;
+            textarea.value = text;
+            textarea.select();
+            document.execCommand('copy');
+            textarea.value = prev;
+        }
+    }
+    updateStatus(doneMessage);
 }
 
 function setStartButtonEnabled(enabled) {
@@ -61,7 +80,10 @@ function ensurePanel() {
       <div id="qq-grab-header">QQ空间说说抓取</div>
       <div id="qq-grab-status">就绪</div>
       <button id="qq-grab-start">开始抓取</button>
-      <button id="qq-grab-copy" style="display:none;">复制结果</button>
+      <div id="qq-grab-actions">
+        <button id="qq-grab-copy" style="display:none;">复制文本</button>
+        <button id="qq-grab-copy-json" style="display:none;">复制 JSON</button>
+      </div>
       <textarea id="qq-grab-result" readonly placeholder="抓取结果将显示在此处..."></textarea>
       <style>
         #qq-grab-panel {
@@ -79,12 +101,21 @@ function ensurePanel() {
           padding: 8px 14px; font-size: 13px; color: #555;
           border-bottom: 1px solid #eee;
         }
-        #qq-grab-start, #qq-grab-copy {
+        #qq-grab-actions {
+          display: flex; gap: 8px; margin: 8px 14px 0; padding: 0;
+        }
+        #qq-grab-start, #qq-grab-copy, #qq-grab-copy-json {
           margin: 8px 14px; padding: 8px 0; border: none; border-radius: 6px;
           font-size: 14px; cursor: pointer; color: #fff; background: #3b82f6;
           transition: background .2s;
         }
+        #qq-grab-actions #qq-grab-copy,
+        #qq-grab-actions #qq-grab-copy-json {
+          flex: 1; margin: 0;
+        }
+        #qq-grab-copy-json { background: #0d9488; }
         #qq-grab-start:hover, #qq-grab-copy:hover { background: #2563eb; }
+        #qq-grab-copy-json:hover { background: #0f766e; }
         #qq-grab-start:disabled { background: #93c5fd; cursor: not-allowed; }
         #qq-grab-result {
           margin: 0 14px 14px; height: 300px; resize: vertical;
@@ -99,14 +130,10 @@ function ensurePanel() {
     document.getElementById('qq-grab-start').addEventListener('click', () => startGrab());
     document.getElementById('qq-grab-copy').addEventListener('click', async () => {
         const textarea = document.getElementById('qq-grab-result');
-        try {
-            await navigator.clipboard.writeText(textarea.value);
-            updateStatus('已复制到剪贴板！');
-        } catch {
-            textarea.select();
-            document.execCommand('copy');
-            updateStatus('已复制到剪贴板！');
-        }
+        await copyText(textarea.value, '已复制文本到剪贴板！');
+    });
+    document.getElementById('qq-grab-copy-json').addEventListener('click', async () => {
+        await copyText(buildFinalJson(), '已复制 JSON 到剪贴板！');
     });
 }
 
@@ -120,6 +147,21 @@ function buildFinalText() {
         }
     });
     return text;
+}
+
+function buildFinalJson() {
+    const items = allQQZoneData.map((item, index) => {
+        const entry = {
+            index: index + 1,
+            time: item.time,
+            content: item.content,
+        };
+        if (item.zf_name) {
+            entry.repost = { author: item.zf_name, content: item.zf_content };
+        }
+        return entry;
+    });
+    return JSON.stringify({ count: items.length, items }, null, 2);
 }
 
 async function expandAllContent(qqDoc) {
@@ -209,7 +251,7 @@ async function getPicContent(imgList) {
     if (!base64) return '[图片]';
 
     const data = await recognizeImage({
-        instruction: '一句话描述图片',
+        instruction: IMAGE_RECOGNIZE_INSTRUCTION,
         imageBase64: base64,
     });
     console.log('[qqzone] recognizeImage 结束', {
