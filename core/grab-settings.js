@@ -7,6 +7,10 @@ const grabModeItem = storage.defineItem('local:qq-grab-mode', {
     fallback: GRAB_MODE_NORMAL,
 });
 
+const includeRepostItem = storage.defineItem('local:qq-grab-include-repost', {
+    fallback: true,
+});
+
 const recognizeTokenItem = storage.defineItem('local:qq-recognize-token', {
     fallback: '',
 });
@@ -25,6 +29,15 @@ export async function setGrabMode(mode) {
     if (mode === GRAB_MODE_RECOGNIZE) {
         await recognizeTestPassedItem.setValue(false);
     }
+}
+
+export async function getIncludeRepost() {
+    return (await includeRepostItem.getValue()) !== false;
+}
+
+/** @param {boolean} include */
+export async function setIncludeRepost(include) {
+    await includeRepostItem.setValue(!!include);
 }
 
 export async function getRecognizeToken() {

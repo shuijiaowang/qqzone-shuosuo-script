@@ -5,9 +5,11 @@ import {
     GRAB_MODE_NORMAL,
     GRAB_MODE_RECOGNIZE,
     getGrabMode,
+    getIncludeRepost,
     getRecognizeToken,
     isRecognizeTestPassed,
     setGrabMode,
+    setIncludeRepost,
     setRecognizeTestPassed,
     setRecognizeToken,
 } from './grab-settings.js';
@@ -24,6 +26,7 @@ let allQQZoneData = [];
 /** @type {typeof GRAB_MODE_NORMAL | typeof GRAB_MODE_RECOGNIZE} */
 let currentGrabMode = GRAB_MODE_NORMAL;
 let currentRecognizeToken = '';
+let currentIncludeRepost = true;
 
 /** 获取说说列表所在的 iframe document（懒加载 + 等待） */
 async function getQQZoneDoc() {
@@ -110,6 +113,7 @@ export async function syncGrabButtonState() {
 async function refreshGrabSettingsFromStorage() {
     currentGrabMode = await getGrabMode();
     currentRecognizeToken = await getRecognizeToken();
+    currentIncludeRepost = await getIncludeRepost();
 }
 
 function applyModeUi(mode) {
@@ -213,6 +217,12 @@ function ensurePanel() {
           <input type="radio" name="qq-grab-mode" value="recognize"> 识图模式
         </label>
       </div>
+      <div id="qq-grab-options-row">
+        <label class="qq-grab-option-label">
+          <input type="checkbox" id="qq-grab-include-repost" checked>
+          爬取转发内容
+        </label>
+      </div>
       <div id="qq-grab-token-row" style="display:none;">
         <label id="qq-grab-token-label" for="qq-grab-token">Token</label>
         <input type="password" id="qq-grab-token" placeholder="登录后获得的 Bearer Token" autocomplete="off">
@@ -246,6 +256,16 @@ function ensurePanel() {
         }
         .qq-grab-mode-label { cursor: pointer; user-select: none; }
         .qq-grab-mode-label input { margin-right: 4px; }
+        #qq-grab-options-row {
+          padding: 8px 14px 0;
+          font-size: 13px;
+          color: #333;
+          display: flex;
+          gap: 16px;
+          align-items: center;
+        }
+        .qq-grab-option-label { cursor: pointer; user-select: none; }
+        .qq-grab-option-label input { margin-right: 6px; }
         #qq-grab-token-row {
           padding: 8px 14px 0; display: flex; flex-direction: column; gap: 6px;
         }
@@ -297,6 +317,14 @@ function ensurePanel() {
         });
     });
 
+    const includeRepostInput = document.getElementById('qq-grab-include-repost');
+    includeRepostInput?.addEventListener('change', async () => {
+        const checked = !!includeRepostInput.checked;
+        currentIncludeRepost = checked;
+        await setIncludeRepost(checked);
+        updateStatus(checked ? '将爬取转发内容' : '将跳过转发内容');
+    });
+
     const tokenInput = document.getElementById('qq-grab-token');
     tokenInput?.addEventListener('change', () => onTokenChange(tokenInput.value));
 
@@ -318,6 +346,8 @@ async function initPanelSettings() {
     await refreshGrabSettingsFromStorage();
     const tokenInput = document.getElementById('qq-grab-token');
     if (tokenInput) tokenInput.value = currentRecognizeToken;
+    const includeRepostInput = document.getElementById('qq-grab-include-repost');
+    if (includeRepostInput) includeRepostInput.checked = !!currentIncludeRepost;
     applyModeUi(currentGrabMode);
     if (currentGrabMode === GRAB_MODE_RECOGNIZE) {
         const passed = await isRecognizeTestPassed();
@@ -334,7 +364,8 @@ async function initPanelSettings() {
 
 function appendAttachmentLines(text, attachments) {
     if (!attachments) return text;
-    return `${text}\nattachmentImageDescription: ${attachments}`;
+    // 文本复制：直接拼接在同一行末尾，并与正文用空格隔开
+    return `${text} ${String(attachments).trim()}`;
 }
 
 function buildFinalText() {
@@ -490,7 +521,12 @@ async function getAttachmentDescription(imgList, textContext = '') {
 
 function buildAttachments(imageDescription, hasVideo) {
     const parts = [];
-    if (imageDescription) parts.push(imageDescription);
+    if (imageDescription) {
+        const desc = String(imageDescription).trim();
+        // 普通模式：固定输出 [图片]
+        // 识图模式：将识别结果包装为 [图片：...]
+        parts.push(desc === '[图片]' ? '[图片]' : `[图片：${desc}]`);
+    }
     if (hasVideo) parts.push('[视频]');
     return parts.join(' ');
 }
@@ -515,14 +551,19 @@ async function extractCurrentPageData(qqDoc) {
         const hasContentVideo = !!item.querySelector('.box > .md > .video');
         const attachments = buildAttachments(contentPicDesc, hasContentVideo);
 
-        const zf_name = item.querySelector('.md .bd a')?.textContent || '';
-        const zfText = getPureText(item.querySelector('.md .bd pre'));
-        const zfPicDesc = await getAttachmentDescription(
-            item.querySelectorAll('.md .md .pic img'),
-            zfText,
-        );
-        const hasRepostVideo = !!item.querySelector('.md .md .video');
-        const zf_attachments = buildAttachments(zfPicDesc, hasRepostVideo);
+        let zf_name = '';
+        let zfText = '';
+        let zf_attachments = '';
+        if (currentIncludeRepost) {
+            zf_name = item.querySelector('.md .bd a')?.textContent || '';
+            zfText = getPureText(item.querySelector('.md .bd pre'));
+            const zfPicDesc = await getAttachmentDescription(
+                item.querySelectorAll('.md .md .pic img'),
+                zfText,
+            );
+            const hasRepostVideo = !!item.querySelector('.md .md .video');
+            zf_attachments = buildAttachments(zfPicDesc, hasRepostVideo);
+        }
 
         if (time || contentText || attachments || zf_name || zfText || zf_attachments) {
             allQQZoneData.push({
