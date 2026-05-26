@@ -1,6 +1,13 @@
-import { listRecognizePayloads, loadRecognizePayload } from '../core/recognize-storage.js';
+import { loadRecognizePayload } from '../core/recognize-storage.js';
 
 const API_BASE = 'http://127.0.0.1:3840';
+
+/** 识图模式连通性测试（固定小图，不读 storage） */
+const TEST_RECOGNIZE_PAYLOAD = {
+    instruction: '一句话描述图片',
+    imageBase64:
+        'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAACXBIWXMAAAsTAAALEwEAmpwYAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAHESURBVHgBjVNNMgNREO5vxE+VhbmBbP1VcQJxgziA5NkwVuIE4QSRlbCacAC5QY5glGCZcYNYKKu89vUwaihEL+Z1Xnd/+frrfpBv1hi68PVFr1V0HSIjnu2L1atT+cWC7xcsboloJVDpiiKBoBXducpvALBPlgCtm+9Fq4Gg11nt7robF85M+yGTUgIlSkaYQruzFKefDKL7WlPh+16kqpAKgJEX3Fow3ohHBEsECC1GZg0d+3706Mo5QElVHKn2Lta62z9RJJOt3LdCP/Y3MvYNkyvXoAzRW/mHGXWAbQgWPluwjwKbRVqTjO2s58KyRaSmOnsbHjy46qRiKFK2XTbd9gY7jWwKpvbstPbpjs4LPf9l0aDet13JWjC1RSXlmEL5pzE35RGWorvaMTVY5FWVdNqTCt9pB5bvKGZcoiBNWxBu3kln7fJ4EgD35JAahBQvnpvHUckuA9V2sXiPy0V0JwYMnJwtx70iCPvONvXD/2r7g3oLKgaWsNHQe39dfAv27xTvOf+dMcj2gFqYz7fgjF5nJX8LOuTsmoxXLI/ZIRAkXwCyPch2/eN1qT7ZYdPZv69xQu9x04rBo/OVOM4B3gCn4dLeryIYgQAAAABJRU5ErkJggg==',
+};
 /** 与 DigitalMe 服务端 DASHSCOPE_TIMEOUT_MS 对齐，大图识别常超过 30s */
 const REQUEST_TIMEOUT_MS = 120000;
 const LOG = '[qqzone-bg]';
@@ -43,10 +50,19 @@ export default defineBackground(() => {
 
         if (type === 'CHECK_HEALTH') return reply(checkHealth());
         if (type === 'RECOGNIZE_IMAGE') {
-            return reply(recognizeByStoredId(message.storageKey || message.id));
+            return reply(recognizeByStoredId(message.storageKey || message.id, message.token));
         }
-        if (type === 'TEST_RECOGNIZE_ALL') return reply(testRecognizeAll());
+        if (type === 'TEST_RECOGNIZE') return reply(testRecognize(message.token));
     });
+
+    function buildAuthHeaders(token) {
+        const headers = { 'Content-Type': 'application/json' };
+        const trimmed = String(token || '').trim();
+        if (trimmed) {
+            headers.Authorization = `Bearer ${trimmed}`;
+        }
+        return headers;
+    }
 
     async function apiFetch(path, options = {}) {
         const url = `${API_BASE}${path}`;
@@ -57,6 +73,7 @@ export default defineBackground(() => {
             url,
             bodyBytes,
             bodyMB: bodyBytes ? (bodyBytes / 1024 / 1024).toFixed(2) : 0,
+            hasAuth: !!options.headers?.Authorization,
         });
 
         const controller = new AbortController();
@@ -146,8 +163,12 @@ export default defineBackground(() => {
         };
     }
 
-    async function recognizePayload(payload) {
+    async function recognizePayload(payload, token) {
         console.log(LOG, 'recognizePayload', summarizePayload(payload));
+        const trimmedToken = String(token || '').trim();
+        if (!trimmedToken) {
+            throw new Error('缺少 Token，请在识图模式中填写');
+        }
         const body = prepareRecognizeBody(payload);
         if (!body.instruction) {
             throw new Error('instruction 为空');
@@ -157,7 +178,7 @@ export default defineBackground(() => {
         }
         const result = await apiFetch('/api/qq-zone/recognize-image', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: buildAuthHeaders(trimmedToken),
             body: JSON.stringify(body),
         });
         console.log('[recognize-image] 接口返回:', result);
@@ -165,7 +186,7 @@ export default defineBackground(() => {
     }
 
     /** 先由 content 写入 WXT storage，再通知；此处读取后请求本地 API */
-    async function recognizeByStoredId(id) {
+    async function recognizeByStoredId(id, token) {
         console.log(LOG, 'recognizeByStoredId', { id });
         const payload = await loadRecognizePayload(id);
 
@@ -174,41 +195,15 @@ export default defineBackground(() => {
             throw new Error('未找到待识别的图片数据');
         }
 
-        return recognizePayload(payload);
+        return recognizePayload(payload, token);
     }
 
-    /** 测试功能:获取所有存储的识别数据并请求后端 */
-    async function testRecognizeAll() {
-        try {
-            const entries = await listRecognizePayloads();
-
-            if (entries.length === 0) {
-                const empty = { message: '没有找到存储的识别数据', count: 0 };
-                console.log('[TEST_RECOGNIZE_ALL] 汇总:', empty);
-                return empty;
-            }
-
-            const results = [];
-            for (const { id, payload } of entries) {
-                try {
-                    const result = await recognizePayload(payload);
-                    console.log(`[TEST_RECOGNIZE_ALL] ${id} 成功:`, result);
-                    results.push({ id, success: true, data: result });
-                } catch (error) {
-                    console.warn(`[TEST_RECOGNIZE_ALL] ${id} 失败:`, error.message);
-                    results.push({ id, success: false, error: error.message });
-                }
-            }
-
-            const summary = {
-                message: `已处理 ${results.length} 条识别数据`,
-                count: results.length,
-                results,
-            };
-            console.log('[TEST_RECOGNIZE_ALL] 汇总:', summary);
-            return summary;
-        } catch (error) {
-            throw new Error(`测试识别失败: ${error.message}`);
+    /** 识图模式连通性测试（固定 payload，不读 storage） */
+    async function testRecognize(token) {
+        const trimmedToken = String(token || '').trim();
+        if (!trimmedToken) {
+            throw new Error('请先填写 Token');
         }
+        return recognizePayload(TEST_RECOGNIZE_PAYLOAD, trimmedToken);
     }
 });

@@ -27,8 +27,8 @@ function warnServiceOnce(message) {
 }
 
 async function sendBackground(type, extra = {}) {
-    const extraKeys = Object.keys(extra).filter((k) => k !== 'imageBase64');
-    console.log(LOG, 'sendMessage → background', { type, extraKeys });
+    const extraKeys = Object.keys(extra).filter((k) => k !== 'imageBase64' && k !== 'token');
+    console.log(LOG, 'sendMessage → background', { type, extraKeys, hasToken: !!extra.token });
     const t0 = Date.now();
     let response;
     try {
@@ -96,9 +96,15 @@ export async function isRecognizeServiceAvailable() {
     }
 }
 
-/** @param {{ instruction: string, imageBase64: string }} payload */
-export async function recognizeImage(payload) {
+/** @param {{ instruction: string, imageBase64: string }} payload @param {string} token */
+export async function recognizeImage(payload, token) {
     console.log(LOG, 'recognizeImage 开始', summarizePayload(payload));
+
+    const trimmedToken = String(token || '').trim();
+    if (!trimmedToken) {
+        console.warn(LOG, 'recognizeImage 中止: 未配置 Token');
+        return null;
+    }
 
     if (serviceAvailable === false) {
         console.warn(LOG, 'recognizeImage 中止: serviceAvailable 已为 false');
@@ -125,7 +131,7 @@ export async function recognizeImage(payload) {
             lenMatch: (payload?.imageBase64?.length ?? 0) === (verify?.imageBase64?.length ?? 0),
         });
 
-        const response = await sendBackground('RECOGNIZE_IMAGE', { storageKey });
+        const response = await sendBackground('RECOGNIZE_IMAGE', { storageKey, token: trimmedToken });
 
         if (response.success && response.data?.ok) {
             console.log(LOG, 'recognizeImage 成功', {
@@ -151,5 +157,29 @@ export async function recognizeImage(payload) {
         });
         warnServiceOnce(`⚠️ 图片识别请求失败，后续图片将跳过识别: ${error.message}`);
         return null;
+    }
+}
+
+/** @param {string} token */
+export async function testRecognizeConnection(token) {
+    const trimmedToken = String(token || '').trim();
+    if (!trimmedToken) {
+        return { ok: false, error: '请先填写 Token' };
+    }
+
+    try {
+        const response = await sendBackground('TEST_RECOGNIZE', { token: trimmedToken });
+        if (response.success && response.data?.ok) {
+            serviceAvailable = true;
+            serviceWarned = false;
+            return { ok: true, data: response.data };
+        }
+        return {
+            ok: false,
+            error: response.error || response.data?.error?.message || '测试识别失败',
+        };
+    } catch (error) {
+        serviceAvailable = false;
+        return { ok: false, error: error.message };
     }
 }

@@ -1,6 +1,16 @@
 // ============== QQ空间抓取 ==============
-import { isRecognizeServiceAvailable, recognizeImage, resetRecognizeService } from './api.js';
+import { recognizeImage, resetRecognizeService, testRecognizeConnection } from './api.js';
 import { buildImageRecognizeInstruction } from './config.js';
+import {
+    GRAB_MODE_NORMAL,
+    GRAB_MODE_RECOGNIZE,
+    getGrabMode,
+    getRecognizeToken,
+    isRecognizeTestPassed,
+    setGrabMode,
+    setRecognizeTestPassed,
+    setRecognizeToken,
+} from './grab-settings.js';
 import { autoScrollToLoadImages, scrollBackToTop } from './scroop.js';
 
 const DELAY_EXPAND = 1000;
@@ -11,6 +21,9 @@ const CHECK_INTERVAL = 1000;
 const IFRAME_WAIT_TIMEOUT = 6000;
 
 let allQQZoneData = [];
+/** @type {typeof GRAB_MODE_NORMAL | typeof GRAB_MODE_RECOGNIZE} */
+let currentGrabMode = GRAB_MODE_NORMAL;
+let currentRecognizeToken = '';
 
 /** 获取说说列表所在的 iframe document（懒加载 + 等待） */
 async function getQQZoneDoc() {
@@ -58,17 +71,130 @@ async function copyText(text, doneMessage = '已复制到剪贴板！') {
     updateStatus(doneMessage);
 }
 
-function setStartButtonEnabled(enabled) {
+function setStartButtonEnabled(enabled, { busy = false } = {}) {
     const startBtn = document.getElementById('qq-grab-start');
     const triggerBtn = document.getElementById('qq-grab-trigger-btn');
     if (startBtn) {
         startBtn.disabled = !enabled;
-        startBtn.textContent = enabled ? '开始抓取' : '抓取中...';
+        startBtn.textContent = busy ? '抓取中...' : '开始抓取';
     }
     if (triggerBtn) {
         triggerBtn.disabled = !enabled;
-        triggerBtn.textContent = enabled ? '📥 抓取说说' : '⏳ 抓取中...';
+        triggerBtn.textContent = busy ? '⏳ 抓取中...' : '📥 抓取说说';
     }
+}
+
+/** 抓取结束后恢复按钮（抓取进行中勿调用） */
+export async function syncGrabButtonState() {
+    const startBtn = document.getElementById('qq-grab-start');
+    const triggerBtn = document.getElementById('qq-grab-trigger-btn');
+    const testBtn = document.getElementById('qq-grab-test');
+    const grayClass = 'qq-grab-disabled-auth';
+
+    if (startBtn) {
+        startBtn.disabled = false;
+        startBtn.textContent = '开始抓取';
+        startBtn.classList.remove(grayClass);
+    }
+    if (triggerBtn) {
+        triggerBtn.disabled = false;
+        triggerBtn.textContent = '📥 抓取说说';
+        triggerBtn.classList.remove(grayClass);
+    }
+    if (testBtn) {
+        testBtn.disabled = false;
+        testBtn.classList.remove(grayClass);
+    }
+}
+
+async function refreshGrabSettingsFromStorage() {
+    currentGrabMode = await getGrabMode();
+    currentRecognizeToken = await getRecognizeToken();
+}
+
+function applyModeUi(mode) {
+    const tokenRow = document.getElementById('qq-grab-token-row');
+    const testBtn = document.getElementById('qq-grab-test');
+    const isRecognize = mode === GRAB_MODE_RECOGNIZE;
+
+    if (tokenRow) tokenRow.style.display = isRecognize ? 'block' : 'none';
+    if (testBtn) testBtn.style.display = isRecognize ? 'block' : 'none';
+
+    const normalRadio = document.querySelector('input[name="qq-grab-mode"][value="normal"]');
+    const recognizeRadio = document.querySelector('input[name="qq-grab-mode"][value="recognize"]');
+    if (normalRadio) normalRadio.checked = mode === GRAB_MODE_NORMAL;
+    if (recognizeRadio) recognizeRadio.checked = mode === GRAB_MODE_RECOGNIZE;
+}
+
+async function onGrabModeChange(mode) {
+    currentGrabMode = mode;
+    await setGrabMode(mode);
+    applyModeUi(mode);
+    if (mode === GRAB_MODE_RECOGNIZE) {
+        updateStatus('识图模式：请填写 Token 并点击「测试识别连接」');
+    } else {
+        updateStatus('普通模式：图片将标记为 [图片]');
+    }
+    await syncGrabButtonState();
+}
+
+async function onTokenChange(token) {
+    const next = String(token || '').trim();
+    const prev = currentRecognizeToken || (await getRecognizeToken());
+    if (next === prev) return;
+
+    currentRecognizeToken = next;
+    await setRecognizeToken(next);
+    await syncGrabButtonState();
+    if (currentGrabMode === GRAB_MODE_RECOGNIZE) {
+        updateStatus('Token 已更新，请重新测试识别连接');
+    }
+}
+
+async function runRecognizeTest() {
+    const testBtn = document.getElementById('qq-grab-test');
+    const tokenInput = document.getElementById('qq-grab-token');
+    const token = String(tokenInput?.value || currentRecognizeToken || '').trim();
+
+    if (!token) {
+        updateStatus('请先填写 Token');
+        await setRecognizeTestPassed(false);
+        await syncGrabButtonState();
+        return;
+    }
+
+    currentRecognizeToken = token;
+    await setRecognizeToken(token);
+
+    if (testBtn) {
+        testBtn.disabled = true;
+        testBtn.textContent = '测试中...';
+    }
+    updateStatus('正在测试识图连接...');
+
+    const result = await testRecognizeConnection(token);
+
+    if (testBtn) {
+        testBtn.disabled = false;
+        testBtn.textContent = '测试识别连接';
+    }
+
+    if (result.ok) {
+        await setRecognizeTestPassed(true);
+        const preview = result.data?.content
+            ? String(result.data.content).slice(0, 40)
+            : '';
+        updateStatus(
+            preview
+                ? `识图测试通过：${preview}${preview.length >= 40 ? '…' : ''}`
+                : '识图测试通过，可以开始抓取',
+        );
+    } else {
+        await setRecognizeTestPassed(false);
+        updateStatus(`识图测试失败：${result.error}`);
+    }
+
+    await syncGrabButtonState();
 }
 
 function ensurePanel() {
@@ -79,6 +205,19 @@ function ensurePanel() {
     panel.innerHTML = `
       <div id="qq-grab-header">QQ空间说说抓取</div>
       <div id="qq-grab-status">就绪</div>
+      <div id="qq-grab-mode-row">
+        <label class="qq-grab-mode-label">
+          <input type="radio" name="qq-grab-mode" value="normal" checked> 普通模式
+        </label>
+        <label class="qq-grab-mode-label">
+          <input type="radio" name="qq-grab-mode" value="recognize"> 识图模式
+        </label>
+      </div>
+      <div id="qq-grab-token-row" style="display:none;">
+        <label id="qq-grab-token-label" for="qq-grab-token">Token</label>
+        <input type="password" id="qq-grab-token" placeholder="登录后获得的 Bearer Token" autocomplete="off">
+      </div>
+      <button id="qq-grab-test" type="button" style="display:none;">测试识别连接</button>
       <button id="qq-grab-start">开始抓取</button>
       <div id="qq-grab-actions">
         <button id="qq-grab-copy" style="display:none;">复制文本</button>
@@ -100,6 +239,31 @@ function ensurePanel() {
         #qq-grab-status {
           padding: 8px 14px; font-size: 13px; color: #555;
           border-bottom: 1px solid #eee;
+        }
+        #qq-grab-mode-row {
+          display: flex; gap: 16px; padding: 10px 14px 0;
+          font-size: 13px; color: #333;
+        }
+        .qq-grab-mode-label { cursor: pointer; user-select: none; }
+        .qq-grab-mode-label input { margin-right: 4px; }
+        #qq-grab-token-row {
+          padding: 8px 14px 0; display: flex; flex-direction: column; gap: 6px;
+        }
+        #qq-grab-token-label { font-size: 12px; color: #666; }
+        #qq-grab-token {
+          width: 100%; box-sizing: border-box; padding: 6px 8px;
+          border: 1px solid #ddd; border-radius: 6px; font-size: 12px;
+        }
+        #qq-grab-test {
+          margin: 8px 14px 0; padding: 8px 0; border: none; border-radius: 6px;
+          font-size: 14px; cursor: pointer; color: #fff; background: #10b981;
+        }
+        #qq-grab-test:hover { background: #059669; }
+        #qq-grab-test:disabled { background: #9ca3af; cursor: not-allowed; }
+        .qq-grab-disabled-auth,
+        #qq-grab-start.qq-grab-disabled-auth:disabled,
+        #qq-grab-trigger-btn.qq-grab-disabled-auth:disabled {
+          background: #9ca3af !important; cursor: not-allowed !important;
         }
         #qq-grab-actions {
           display: flex; gap: 8px; margin: 8px 14px 0; padding: 0;
@@ -127,6 +291,17 @@ function ensurePanel() {
     `;
     document.body.appendChild(panel);
 
+    document.querySelectorAll('input[name="qq-grab-mode"]').forEach((radio) => {
+        radio.addEventListener('change', () => {
+            if (radio.checked) onGrabModeChange(radio.value);
+        });
+    });
+
+    const tokenInput = document.getElementById('qq-grab-token');
+    tokenInput?.addEventListener('change', () => onTokenChange(tokenInput.value));
+
+    document.getElementById('qq-grab-test')?.addEventListener('click', () => runRecognizeTest());
+
     document.getElementById('qq-grab-start').addEventListener('click', () => startGrab());
     document.getElementById('qq-grab-copy').addEventListener('click', async () => {
         const textarea = document.getElementById('qq-grab-result');
@@ -135,6 +310,26 @@ function ensurePanel() {
     document.getElementById('qq-grab-copy-json').addEventListener('click', async () => {
         await copyText(buildFinalJson(), '已复制 JSON 到剪贴板！');
     });
+
+    void initPanelSettings();
+}
+
+async function initPanelSettings() {
+    await refreshGrabSettingsFromStorage();
+    const tokenInput = document.getElementById('qq-grab-token');
+    if (tokenInput) tokenInput.value = currentRecognizeToken;
+    applyModeUi(currentGrabMode);
+    if (currentGrabMode === GRAB_MODE_RECOGNIZE) {
+        const passed = await isRecognizeTestPassed();
+        updateStatus(
+            passed
+                ? '识图模式：测试已通过，可以开始抓取'
+                : '识图模式：请填写 Token 并点击「测试识别连接」',
+        );
+    } else {
+        updateStatus('普通模式：图片将标记为 [图片]');
+    }
+    await syncGrabButtonState();
 }
 
 function buildFinalText() {
@@ -241,6 +436,12 @@ async function imagesToBase64(imgList) {
 }
 
 async function getPicContent(imgList, textContext = '') {
+    if (!imgList.length) return '';
+
+    if (currentGrabMode === GRAB_MODE_NORMAL) {
+        return '[图片]';
+    }
+
     console.log('[qqzone] getPicContent', { imgCount: imgList.length, hasContext: !!String(textContext || '').trim() });
     const base64 = await imagesToBase64(imgList);
     console.log('[qqzone] imagesToBase64 完成', {
@@ -250,10 +451,13 @@ async function getPicContent(imgList, textContext = '') {
     });
     if (!base64) return '[图片]';
 
-    const data = await recognizeImage({
-        instruction: buildImageRecognizeInstruction(textContext),
-        imageBase64: base64,
-    });
+    const data = await recognizeImage(
+        {
+            instruction: buildImageRecognizeInstruction(textContext),
+            imageBase64: base64,
+        },
+        currentRecognizeToken,
+    );
     console.log('[qqzone] recognizeImage 结束', {
         ok: !!data?.ok,
         hasContent: !!data?.content,
@@ -295,8 +499,10 @@ async function extractCurrentPageData(qqDoc) {
 }
 
 async function autoGrabAndNextPage(qqDoc) {
-    updateStatus('滚动加载图片...');
-    await autoScrollToLoadImages();
+    if (currentGrabMode === GRAB_MODE_RECOGNIZE) {
+        updateStatus('滚动加载图片...');
+        await autoScrollToLoadImages();
+    }
 
     await expandAllContent(qqDoc);
     updateStatus('解析当前页说说...');
@@ -308,7 +514,7 @@ async function autoGrabAndNextPage(qqDoc) {
         console.log('🎉 抓取完成：\n', finalText);
         showResult(finalText);
         updateStatus(`抓取完成！总计 ${allQQZoneData.length} 条说说`);
-        setStartButtonEnabled(true);
+        await syncGrabButtonState();
         return;
     }
 
@@ -322,8 +528,10 @@ async function autoGrabAndNextPage(qqDoc) {
     while (Date.now() < deadline) {
         const list = qqDoc.querySelectorAll('#msgList > li');
         if (list.length) {
-            scrollBackToTop();
-            await sleep(CHECK_INTERVAL);
+            if (currentGrabMode === GRAB_MODE_RECOGNIZE) {
+                scrollBackToTop();
+                await sleep(CHECK_INTERVAL);
+            }
             await autoGrabAndNextPage(qqDoc);
             return;
         }
@@ -333,7 +541,14 @@ async function autoGrabAndNextPage(qqDoc) {
 }
 
 async function startGrab() {
-    setStartButtonEnabled(false);
+    await refreshGrabSettingsFromStorage();
+
+    if (currentGrabMode === GRAB_MODE_RECOGNIZE && !(await isRecognizeTestPassed())) {
+        alert('识图模式需先点击「测试识别连接」并通过后才能抓取');
+        return;
+    }
+
+    setStartButtonEnabled(false, { busy: true });
     allQQZoneData = [];
     resetRecognizeService();
 
@@ -351,15 +566,27 @@ async function startGrab() {
     } catch (error) {
         console.error('❌ 抓取出错：', error);
         updateStatus(`出错：${error.message}`);
-        setStartButtonEnabled(true);
+    } finally {
+        await syncGrabButtonState();
     }
+}
+
+/** 外层「抓取说说」：识图模式下打开面板并将测试通过标记置为 false */
+export async function openGrabPanelFromTrigger() {
+    await refreshGrabSettingsFromStorage();
+    if (currentGrabMode === GRAB_MODE_RECOGNIZE) {
+        await setRecognizeTestPassed(false);
+    }
+    await QQZoneGrabber({ autoStart: false });
 }
 
 /** @param {{ autoStart?: boolean }} [options] */
 export async function QQZoneGrabber(options = {}) {
-    const { autoStart = true } = options;
+    const { autoStart = false } = options;
     console.log('🚀 QQ空间抓取器启动');
     ensurePanel();
+    await refreshGrabSettingsFromStorage();
+    await syncGrabButtonState();
     if (autoStart) {
         await startGrab();
     }
