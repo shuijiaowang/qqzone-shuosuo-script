@@ -1,6 +1,6 @@
 // ============== QQ空间抓取 ==============
 import { isRecognizeServiceAvailable, recognizeImage, resetRecognizeService } from './api.js';
-import { IMAGE_RECOGNIZE_INSTRUCTION } from './config.js';
+import { buildImageRecognizeInstruction } from './config.js';
 import { autoScrollToLoadImages, scrollBackToTop } from './scroop.js';
 
 const DELAY_EXPAND = 1000;
@@ -240,8 +240,8 @@ async function imagesToBase64(imgList) {
     }
 }
 
-async function getPicContent(imgList) {
-    console.log('[qqzone] getPicContent', { imgCount: imgList.length });
+async function getPicContent(imgList, textContext = '') {
+    console.log('[qqzone] getPicContent', { imgCount: imgList.length, hasContext: !!String(textContext || '').trim() });
     const base64 = await imagesToBase64(imgList);
     console.log('[qqzone] imagesToBase64 完成', {
         imgCount: imgList.length,
@@ -251,7 +251,7 @@ async function getPicContent(imgList) {
     if (!base64) return '[图片]';
 
     const data = await recognizeImage({
-        instruction: IMAGE_RECOGNIZE_INSTRUCTION,
+        instruction: buildImageRecognizeInstruction(textContext),
         imageBase64: base64,
     });
     console.log('[qqzone] recognizeImage 结束', {
@@ -274,14 +274,19 @@ async function extractCurrentPageData(qqDoc) {
             time = (timeEl.getAttribute('title') || '').replace(/^编辑于\s*/, '').trim();
         }
 
-        const contentPic = await getPicContent(item.querySelectorAll('.box > .md > .pic img'));
-        const contentVideo = item.querySelector('.box > .md > .video') ? '[视频]' : '';
         const contentEl = item.querySelector('.bd pre.content');
-        const content = getPureText(contentEl) + contentPic + contentVideo;
+        const contentText = getPureText(contentEl);
+        const contentPic = await getPicContent(
+            item.querySelectorAll('.box > .md > .pic img'),
+            contentText,
+        );
+        const contentVideo = item.querySelector('.box > .md > .video') ? '[视频]' : '';
+        const content = contentText + contentPic + contentVideo;
 
         const zf_name = item.querySelector('.md .bd a')?.textContent || '';
-        const zf_Pic = item.querySelector('.md .md .pic') ? '[图片]' : '';
-        const zf_content = getPureText(item.querySelector('.md .bd pre')) + zf_Pic;
+        const zfText = getPureText(item.querySelector('.md .bd pre'));
+        const zf_Pic = await getPicContent(item.querySelectorAll('.md .md .pic img'), zfText);
+        const zf_content = zfText + zf_Pic;
 
         if (time || content) {
             allQQZoneData.push({ time, content, zf_name, zf_content });
